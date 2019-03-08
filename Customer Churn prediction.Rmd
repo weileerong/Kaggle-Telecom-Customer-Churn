@@ -1,0 +1,238 @@
+---
+title: "Customer Retention"
+author: "Lirong Wei"
+date: "February 24, 2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data
+Telco Customer Churn (Focused customer retention programs)
+https://www.kaggle.com/blastchar/telco-customer-churn
+
+This is a small sample dataset (172KB) about telecom customers. There are 7043 observations and 21 variables and only 11 missing values. Each observation is a customer and the 21 variables include information about customer churn, services customer signed, customer account and demographic information. 
+## Question of interest
+
+The most interest questions in this datasets would be how to predict whether a customer churn or not and what are most important factors/predictors/variables that are related with customer churn? If we could provide churn customers before they actually leave, then we could privide some deal or attractive offer to retain our customers. 
+
+
+## Approach to solve the problem
+
+To predict customer churn, the variable churn would be our response variable. Churn only has two possible values: Yes or No. We could model a customer churning as a  Bernoulli random variable. Take all other information we have as covariates to explore what covariate will influent customer churn and to do prediction. Therefore, I choose logistics regression model:
+$Churn_{i} ~ Bernoulli(\pi_{i})$
+
+$Churn = Yes, with probability \pi_{i} $
+
+$logit(\pi_{i})=\beta_{0} + \beta_{1}X_{i1} + \beta_{2}X_{i2} + ... +  \beta_{p-1}X_{i(p-1_)} $
+
+
+## Code and results
+
+Here is the dataset:
+```{r loaddata}
+cus_retention <- read.csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+ str(cus_retention)
+head(cus_retention)
+#check missing values
+sum(is.na(cus_retention))
+```
+
+summary of the data:
+```{r data_explore}
+summary(cus_retention[,-1])
+# We could easily find that PhoneService and MultipleLines must be perfectly collinear
+# In addition, variable InternetService must cause collinearity among variables:  OnlineSecurity, OnlineBackup, DeviceProtection, TechSupport,  StreamingTV and StreamingMovies. 
+
+#We could deal with this using data processing
+cus_retention_new <-  cus_retention[,-1] #delete ID column
+#1.Dummy variable for MultipleLines
+cus_retention_new$MultipleLines_new <- 1
+cus_retention_new$MultipleLines_new[cus_retention_new$MultipleLines=="No" |cus_retention_new$MultipleLines=="No phone service" ] <- 0
+#2.Dummy variable for OnlineSecurity
+cus_retention_new$OnlineSecurity_new <- 1
+cus_retention_new$OnlineSecurity_new[cus_retention_new$OnlineSecurity=="No" |cus_retention_new$OnlineSecurity=="No internet service" ] <- 0
+#3.Dummy variable for OnlineBackup
+cus_retention_new$OnlineBackup_new <- 1
+cus_retention_new$OnlineBackup_new[cus_retention_new$OnlineBackup=="No" |cus_retention_new$OnlineBackup=="No internet service" ] <- 0
+#4.Dummy variable for DeviceProtection
+cus_retention_new$DeviceProtection_new <- 1
+cus_retention_new$DeviceProtection_new[cus_retention_new$DeviceProtection=="No" |cus_retention_new$DeviceProtection=="No internet service" ] <- 0
+#5.Dummy variable for TechSupport
+cus_retention_new$TechSupport_new <- 1
+cus_retention_new$TechSupport_new[cus_retention_new$TechSupport=="No" |cus_retention_new$TechSupport=="No internet service" ] <- 0
+#6.Dummy varible for StreamingTV
+cus_retention_new$StreamingTV_new <- 1
+cus_retention_new$StreamingTV_new[cus_retention_new$StreamingTV=="No" |cus_retention_new$StreamingTV=="No internet service" ] <- 0
+#7.Dummy variable for StreamingMovies
+cus_retention_new$StreamingMovies_new <- 1
+cus_retention_new$StreamingMovies_new[cus_retention_new$StreamingMovies=="No" |cus_retention_new$StreamingMovies=="No internet service" ] <- 0
+
+#Check process
+table(cus_retention_new$MultipleLines_new)
+table(cus_retention_new$OnlineSecurity_new)
+table(cus_retention_new$OnlineBackup_new)
+table(cus_retention_new$DeviceProtection_new)
+table(cus_retention_new$TechSupport_new)
+table(cus_retention_new$StreamingTV_new)
+table(cus_retention_new$StreamingMovies_new)
+
+#Ok! ready to build model
+cus_retention_new <- cus_retention_new[,-c(7,9,10,11,12,13,14)]
+```
+
+
+Logistic regression model
+```{r model,warning=FALSE}
+library(caTools) #split data
+library(ROCR) #roc curve and auc
+library(MASS) #select variables 
+
+#split dataset
+set.seed(2019)
+split = sample.split(cus_retention_new$Churn, SplitRatio = 0.7)
+train = cus_retention_new[split,]
+test = cus_retention_new[!split,]
+#check split
+table(train$Churn)/nrow(train)
+table(test$Churn)/nrow(test)
+#logistic regression model
+logi_model <- glm(Churn ~ .,data = train,family = "binomial")
+summary(logi_model)
+```
+
+
+```{r}
+# Now we have 19 predictors we could use forward variable selection process to select variables
+step <- stepAIC(logi_model,trace = FALSE)
+summary(step)
+#step is the final model.
+#Here is the list of 12 varibles that are selected in the final model with point estimation of coeffient. They are significantly related with customer churn. 
+step$coefficients
+```
+
+
+```{r evaluations}
+# with the model, try to predict on test model
+test$predProbs <- predict(step,newdata=test,type="response")
+# evaluate with roc curve on test set
+roc.pred = prediction(test$predProbs, test$Churn)
+perf = performance(roc.pred, "tpr", "fpr")
+plot(perf,                      # the data
+     main = "ROC Curve",        # the chart's title
+     xlab = "1 - Specificity",  # the name of the x-axis
+     ylab = "Sensitivity",      # the name of the y-axis
+     colorize=TRUE)             # add color to curve depending on cutoff prob.
+# Select cutoff to be 0.3 as a tradeoff between sensitivity and specificity (similar to the original proportions of Churn in the dataset)
+cutoff=0.3
+test$predChurn = ifelse(test$predProbs >= cutoff, 1, 0)
+#Confusion matrix
+table(test$Churn, test$predChurn)
+# Accuracy
+(1174 + 438)/nrow(test)
+# Sensitivity
+438 / (123 + 438)
+# Specificity
+1174 / (1174 + 376)
+#Lift curve
+LiftData <- performance(roc.pred, measure="lift", x.measure="rpp")
+plot(LiftData,                # the data
+     main="Lift Chart",       # the chart's title
+     xlab="% of Population",  # the name of the x-axis
+     ylab="Lift",             # the name of the y-axis
+     col="blue")              # the color of our lift curve
+
+abline(1,0,col="red") # this adds a straight line at intercept 1 with slope 0
+```
+
+## Discoveries
+
+1. Based on Z-test and variable selection process: Dependents, tenure, InternetService, Contract, PaperlessBilling, PaymentMethod, MonthlyCharges, TotalCharges, MultipleLines, OnlineSecurity, TechSupport, StreamingTV and StreamingMovies are significant predictors in predicting customer Churn. 
+
+2. With Logistics regression we could predict probability of a customer Churn which will help us in customer detention. If we prioritize the correct prediction of Churn customers, we could try to use a threshold that will lead to high sensitivity of the model.
+
+3. Could use machine learning method to do prediction and use cross-validation to compare the performance of models.
+
+## Appendix: EDA figures
+
+```{r echo=FALSE}
+library(ggplot2)
+library(dplyr)
+plot0 <- cus_retention %>%
+  group_by(Churn) %>%
+  summarise(Customers=n())
+ggplot(plot0) +
+      geom_col(aes(x = Churn, y = Customers,fill=Churn))+
+      labs(title = "Churn distribution")+
+      theme_minimal()
+  
+
+plot1 <- cus_retention %>%
+  group_by(gender,Churn) %>%
+  summarise(Customers=n())
+ggplot(plot1) +
+      geom_col(aes(x = gender, y = Customers, fill = Churn))+
+      labs(title = "Gender distribution")+
+      theme_minimal()
+
+plot2 <- cus_retention %>%
+  group_by(Partner,Churn) %>%
+  summarise(Customers=n())
+ggplot(plot2) +
+      geom_col(aes(x = Partner , y = Customers, fill = Churn))+
+      labs(title = "Partner distribution")+
+      theme_minimal()
+
+plot3 <- cus_retention %>%
+  group_by(Dependents,Churn) %>%
+  summarise(Customers=n())
+ggplot(plot3) +
+      geom_col(aes(x = Dependents , y = Customers, fill = Churn))+
+      labs(title = "Dependents distribution")+
+      theme_minimal()
+
+plot4 <- cus_retention %>%
+  group_by(PhoneService,Churn) %>%
+  summarise(Customers=n())
+ggplot(plot4) +
+      geom_col(aes(x = PhoneService , y = Customers, fill = Churn))+
+      labs(title = "PhoneService distribution")+
+      theme_minimal()
+
+plot5 <- cus_retention %>%
+  group_by(InternetService,Churn) %>%
+  summarise(Customers=n())
+ggplot(plot5) +
+      geom_col(aes(x = InternetService , y = Customers, fill = Churn))+
+      labs(title = "InternetService distribution")+
+      theme_minimal()
+
+plot6 <- cus_retention %>%
+  group_by(PaperlessBilling,Churn) %>%
+  summarise(Customers=n())
+ggplot(plot6) +
+      geom_col(aes(x = PaperlessBilling , y = Customers, fill = Churn))+
+      labs(title = "PaperlessBilling distribution")+
+      theme_minimal()
+
+plot7 <- cus_retention %>%
+  group_by(PaymentMethod,Churn) %>%
+  summarise(Customers=n())
+ggplot(plot7) +
+      geom_col(aes(x = PaymentMethod , y = Customers, fill = Churn))+
+      labs(title = "PaymentMethod distribution")+
+      theme_minimal()
+
+ggplot(cus_retention, aes(x=Churn, y=MonthlyCharges, fill=Churn)) +
+  geom_boxplot()+
+  labs(title = "MonthlyCharges distribution")+
+      theme_minimal()
+ggplot(cus_retention, aes(x=Churn, y=TotalCharges, fill=Churn)) +
+  geom_boxplot()+
+  labs(title = "TotalCharges distribution")+
+      theme_minimal()
+```
+
+
